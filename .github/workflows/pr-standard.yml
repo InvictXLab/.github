@@ -1,0 +1,90 @@
+name: PR Standard
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: pr-standard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate title and body
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          node <<'NODE'
+          const title = process.env.PR_TITLE || "";
+          const body = process.env.PR_BODY || "";
+          const errors = [];
+
+          const titlePattern =
+            /^(feat|fix|docs|refactor|test|build|ci|chore|perf|revert)(\([a-z0-9][a-z0-9._/-]*\))?!?:\s+\S.*$/u;
+          if (!titlePattern.test(title)) {
+            errors.push(
+              "Title must match <type>(<optional-scope>)!: <summary> with an allowed type.",
+            );
+          }
+
+          const required = [
+            "Why",
+            "What changed",
+            "Validation",
+            "Risk and rollback",
+          ];
+          const headings = [];
+          const headingPattern = /^##[ \t]+(.+?)[ \t]*$/gm;
+          let match;
+          while ((match = headingPattern.exec(body)) !== null) {
+            headings.push({
+              name: match[1],
+              start: match.index,
+              contentStart: headingPattern.lastIndex,
+            });
+          }
+
+          let previousIndex = -1;
+          for (const name of required) {
+            const matches = headings
+              .map((heading, index) => ({ ...heading, index }))
+              .filter((heading) => heading.name === name);
+            if (matches.length !== 1) {
+              errors.push(`Body must contain exactly one "## ${name}" heading.`);
+              continue;
+            }
+
+            const heading = matches[0];
+            if (heading.index <= previousIndex) {
+              errors.push(`"## ${name}" is out of order.`);
+            }
+            previousIndex = heading.index;
+
+            const next = headings[heading.index + 1];
+            const rawContent = body.slice(
+              heading.contentStart,
+              next ? next.start : body.length,
+            );
+            const content = rawContent
+              .replace(/<!--[\s\S]*?-->/g, "")
+              .trim();
+            if (!content || /^(n\/?a|none|不适用)$/iu.test(content)) {
+              errors.push(
+                `"## ${name}" must contain evidence or a concrete reason it does not apply.`,
+              );
+            }
+          }
+
+          if (errors.length > 0) {
+            for (const error of errors) {
+              console.error(`::error::${error}`);
+            }
+            process.exit(1);
+          }
+
+          console.log("PR title and required body sections follow the standard.");
+          NODE
